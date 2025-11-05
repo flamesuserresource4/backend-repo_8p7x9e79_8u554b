@@ -1,8 +1,14 @@
 import os
-from fastapi import FastAPI
+from typing import List, Any
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from bson import ObjectId
 
-app = FastAPI()
+from database import db, create_document, get_documents
+from schemas import Task
+
+app = FastAPI(title="Supply Chain Task & Workflow API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,57 +18,73 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/api/hello")
-def hello():
-    return {"message": "Hello from the backend API!"}
+# Helpers
+class JSONEncoder:
+    @staticmethod
+    def encode_doc(doc: dict) -> dict:
+        if not doc:
+            return doc
+        d = {**doc}
+        if "_id" in d and isinstance(d["_id"], ObjectId):
+            d["id"] = str(d.pop("_id"))
+        # Convert datetime to ISO strings
+        for k, v in list(d.items()):
+            if hasattr(v, 'isoformat'):
+                try:
+                    d[k] = v.isoformat()
+                except Exception:
+                    pass
+        return d
+
+
+@app.get("/")
+async def root():
+    return {"message": "Supply Chain Task & Workflow API running"}
+
 
 @app.get("/test")
-def test_database():
-    """Test endpoint to check if database is available and accessible"""
-    response = {
+async def test_database():
+    status = {
         "backend": "✅ Running",
         "database": "❌ Not Available",
-        "database_url": None,
-        "database_name": None,
-        "connection_status": "Not Connected",
-        "collections": []
+        "database_url": "❌ Not Set",
+        "database_name": "❌ Not Set",
+        "collections": [],
     }
-    
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
-            response["database"] = "✅ Available"
-            response["database_url"] = "✅ Configured"
-            response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
-            response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
+            status["database"] = "✅ Connected"
+            status["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
+            status["database_name"] = db.name
             try:
-                collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
-                response["database"] = "✅ Connected & Working"
+                status["collections"] = db.list_collection_names()
             except Exception as e:
-                response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
+                status["collections"] = [f"error: {str(e)[:80]}"]
         else:
-            response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+            status["database"] = "❌ Not Connected"
     except Exception as e:
-        response["database"] = f"❌ Error: {str(e)[:50]}"
-    
-    # Check environment variables
-    import os
-    response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
-    response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
-    return response
+        status["database"] = f"❌ Error: {str(e)[:80]}"
+    return status
+
+
+# Tasks Endpoints
+@app.get("/api/tasks")
+async def list_tasks() -> List[Any]:
+    try:
+        docs = get_documents("task", {}, None)
+        return [JSONEncoder.encode_doc(d) for d in docs]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tasks", status_code=201)
+async def create_task(task: Task) -> dict:
+    try:
+        new_id = create_document("task", task)
+        return {"id": new_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
